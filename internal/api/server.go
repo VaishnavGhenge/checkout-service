@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,15 +13,30 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vaishnavghenge/checkout-service/internal/domain"
 	"github.com/vaishnavghenge/checkout-service/internal/store"
 )
 
+type Service interface {
+	Ping(context.Context) error
+	Products(context.Context) ([]domain.Product, error)
+	CreateCart(context.Context) (domain.Cart, error)
+	Cart(context.Context, uuid.UUID) (domain.Cart, error)
+	AddCartItem(context.Context, uuid.UUID, int64, int) (domain.Cart, error)
+	UpdateCartItem(context.Context, uuid.UUID, int64, int) (domain.Cart, error)
+	RemoveCartItem(context.Context, uuid.UUID, int64) error
+	Checkout(context.Context, uuid.UUID, string, string) (domain.Order, bool, error)
+	Order(context.Context, uuid.UUID) (domain.Order, error)
+	GenerateCoupon(context.Context) (domain.Coupon, error)
+	Report(context.Context) (domain.Report, error)
+}
+
 type Server struct {
-	store  *store.Store
+	store  Service
 	logger *slog.Logger
 }
 
-func NewServer(dataStore *store.Store, logger *slog.Logger) http.Handler {
+func NewServer(dataStore Service, logger *slog.Logger) http.Handler {
 	s := &Server{store: dataStore, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)

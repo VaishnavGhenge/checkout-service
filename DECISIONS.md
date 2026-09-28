@@ -127,7 +127,7 @@ sequenceDiagram
 
 ## Implemented and intentionally deferred
 
-Implemented: all required cart operations, product listing, atomic and idempotent checkout, order retrieval, manual coupon generation, coupon redemption, repeatable-read reporting, migrations and seeds, structured errors/logging, graceful shutdown, health checking, Docker Compose, executable examples, OpenAPI documentation, and real PostgreSQL concurrency tests.
+Implemented: all required cart operations, product listing, atomic and idempotent checkout, order retrieval, manual coupon generation, coupon redemption, repeatable-read reporting, migrations and seeds, structured errors/logging, graceful shutdown, health checking, Docker Compose, executable examples, OpenAPI documentation, handler contract tests, and real PostgreSQL concurrency tests.
 
 Deferred deliberately:
 
@@ -154,4 +154,4 @@ No private prompts or transcripts are included.
 
 ## If given another two hours
 
-First, I would add HTTP-level integration tests for every documented error/status mapping and run a race-enabled stress loop over the concurrency cases. Next, I would add migration advisory locking/checksums and capture query/lock-wait metrics under a short load test. Those checks are more likely to reveal meaningful weaknesses than adding optional frontend surface area.
+First, I would add migration advisory locking and checksums, then capture query latency and lock-wait metrics under a short load test. I would also property-test money calculations near integer boundaries and fuzz request decoding. Those checks are more likely to reveal meaningful weaknesses than adding optional frontend surface area.

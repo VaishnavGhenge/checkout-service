@@ -91,6 +91,8 @@ The integration suite deliberately overlaps operations. It verifies:
 - an idempotency key cannot be reused with a different cart or coupon; and
 - an order retains its original product name and price after the catalog changes.
 
+Fast handler tests separately verify strict JSON parsing, required idempotency keys, replay headers, resource locations, and the documented status/error-code mapping.
+
 ## Repository map
 
 ```text
