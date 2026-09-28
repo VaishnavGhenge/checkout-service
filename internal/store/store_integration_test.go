@@ -130,6 +130,54 @@ func TestConcurrentIdempotentCheckoutCreatesOneOrder(t *testing.T) {
 	}
 }
 
+func TestConcurrentIdempotencyKeyReuseWithDifferentCouponIsRejected(t *testing.T) {
+	service, _ := integrationStore(t, 1)
+	ctx := context.Background()
+
+	milestoneCart := cartWithItem(t, service, 1, 1)
+	if _, _, err := service.Checkout(ctx, milestoneCart, "milestone-order", ""); err != nil {
+		t.Fatalf("place milestone order: %v", err)
+	}
+	coupon, err := service.GenerateCoupon(ctx)
+	if err != nil {
+		t.Fatalf("generate coupon: %v", err)
+	}
+
+	cartID := cartWithItem(t, service, 2, 1)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var waitGroup sync.WaitGroup
+	for _, couponCode := range []string{"", coupon.Code} {
+		waitGroup.Add(1)
+		go func(couponCode string) {
+			defer waitGroup.Done()
+			<-start
+			_, _, err := service.Checkout(ctx, cartID, "same-key-different-input", couponCode)
+			results <- err
+		}(couponCode)
+	}
+	close(start)
+	waitGroup.Wait()
+	close(results)
+
+	succeeded, rejected := 0, 0
+	for err := range results {
+		if err == nil {
+			succeeded++
+			continue
+		}
+		var domainErr *Error
+		if errors.As(err, &domainErr) && domainErr.Code == "IDEMPOTENCY_KEY_REUSED" {
+			rejected++
+			continue
+		}
+		t.Fatalf("unexpected checkout error: %v", err)
+	}
+	if succeeded != 1 || rejected != 1 {
+		t.Fatalf("succeeded=%d rejected=%d, want 1 and 1", succeeded, rejected)
+	}
+}
+
 func TestConcurrentCheckoutDoesNotOversell(t *testing.T) {
 	service, pool := integrationStore(t, 5)
 	carts := []uuid.UUID{

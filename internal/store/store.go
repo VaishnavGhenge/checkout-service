@@ -249,7 +249,13 @@ func (s *Store) Checkout(ctx context.Context, cartID uuid.UUID, idempotencyKey, 
 		if lookupErr != nil {
 			return domain.Order{}, false, lookupErr
 		}
-		if found && existing.CartID == cartID && sameCoupon(existing.CouponCode, couponCode) {
+		if found {
+			if existing.CartID != cartID {
+				return domain.Order{}, false, newError("IDEMPOTENCY_KEY_REUSED", "idempotency key was already used for a different cart")
+			}
+			if !sameCoupon(existing.CouponCode, couponCode) {
+				return domain.Order{}, false, newError("IDEMPOTENCY_KEY_REUSED", "idempotency key was already used with a different coupon")
+			}
 			return existing, true, nil
 		}
 	}
