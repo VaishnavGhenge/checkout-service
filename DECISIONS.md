@@ -12,6 +12,7 @@
 | A coupon redeems at most once | Its row is locked during checkout and `redeemed_order_id` is unique. Redemption is committed in the checkout transaction. |
 | Failed checkout has no effects | Inventory, order, coupon, and cart changes share one transaction and roll back together. |
 | Reports reconcile at one point in time | All report queries run in a read-only, repeatable-read transaction. |
+| Concurrent replicas initialize the schema safely | Migration runners acquire a transaction-scoped PostgreSQL advisory lock before bootstrap DDL and re-check applied versions while holding it. |
 
 ## Checkout transaction
 
@@ -125,9 +126,21 @@ sequenceDiagram
 
 **Consequences:** New domain errors require an explicit mapping. A larger service could add field-level details, correlation IDs, and a generated error catalog.
 
+## Decision: Serialize embedded migrations before bootstrap DDL
+
+**Context:** Every application instance runs embedded migrations at startup, including when several replicas start together against a fresh database. `CREATE TABLE IF NOT EXISTS` does not serialize PostgreSQL catalog changes and concurrent bootstrap attempts can still fail with a uniqueness violation in the system catalog.
+
+**Options considered:** Require an external deployment job immediately; use a session lock around per-file transactions; run the migration set in one transaction protected by a transaction-scoped advisory lock.
+
+**Choice:** Acquire a transaction-scoped advisory lock before creating `schema_migrations`, then check and apply all pending embedded migrations in that transaction.
+
+**Why:** The lock is released automatically on commit, rollback, connection failure, or process termination. Waiting replicas re-check migration state only after the winning runner commits, so they do not execute the same DDL.
+
+**Consequences:** Application startup waits while another instance migrates, and the full migration set shares one transaction. A production deployment job remains preferable for operational control, especially once migrations become long-running or require non-transactional PostgreSQL operations.
+
 ## Implemented and intentionally deferred
 
-Implemented: all required cart operations, product listing, atomic and idempotent checkout, order retrieval, manual coupon generation, coupon redemption, repeatable-read reporting, migrations and seeds, structured errors/logging, graceful shutdown, health checking, Docker Compose, executable examples, OpenAPI documentation, handler contract tests, and real PostgreSQL concurrency tests.
+Implemented: all required cart operations, product listing, atomic and idempotent checkout, order retrieval, manual coupon generation, coupon redemption, repeatable-read reporting, serialized embedded migrations and seeds, structured errors/logging, graceful shutdown, health checking, Docker Compose, executable examples, OpenAPI documentation, handler contract tests, real PostgreSQL concurrency tests, and a repeatable critical-path HTTP load harness.
 
 Deferred deliberately:
 
@@ -140,7 +153,7 @@ Deferred deliberately:
 
 ## Multiple instances and production evolution
 
-The correctness mechanisms already reside in PostgreSQL, so multiple stateless API instances can share the database without a distributed process lock. All instances must use identical coupon configuration. Production hardening would add a connection proxy where appropriate, migration execution as a deployment job, TLS and secret-managed database credentials, authentication for admin routes, request correlation and observability, bounded retries for serialization/deadlock errors, backups, and load tests around hot inventory rows.
+The correctness mechanisms already reside in PostgreSQL, so multiple stateless API instances can share the database without a process-local lock. Checkout and coupon generation use database row/advisory locks, and simultaneous startup migration runners are serialized by a separate database advisory lock. All instances must use identical coupon configuration. Production hardening would add a connection proxy where appropriate, move migration execution to a deployment job for operational control, add TLS and secret-managed database credentials, authenticate admin routes, add request correlation and observability, retry bounded serialization/deadlock failures, maintain backups, and load-test hot inventory rows.
 
 If payment or notifications become external side effects, checkout should become a state machine. A durable idempotency record would claim the request, payment would use the same external idempotency key, and an outbox written with the order would drive notifications. Database locks should never be held across a network payment call.
 
@@ -148,10 +161,10 @@ If payment or notifications become external side effects, checkout should become
 
 AI-assisted coding and review tools were used to accelerate scaffolding, enumerate failure cases, and critique the transaction design. Every produced path was compiled, vetted, and tested against PostgreSQL.
 
-One material correction came from reviewing the initial idempotency flow: two concurrent retries could both miss the first lookup; the loser then waited for the cart lock and could incorrectly receive `CART_ALREADY_CHECKED_OUT`. The flow was redirected to re-read the completed order after that lock race, and an eight-way concurrent regression test now proves one order is returned to every retry while inventory changes once. A separate concurrent test races two carts for one coupon.
+One material correction came from reviewing the initial idempotency flow: two concurrent retries could both miss the first lookup; the loser then waited for the cart lock and could incorrectly receive `CART_ALREADY_CHECKED_OUT`. The flow was redirected to re-read the completed order after that lock race, and an eight-way concurrent regression test now proves one order is returned to every exact retry while inventory changes once. Review then exposed the related mismatched-input race: the post-lock lookup returned `CART_ALREADY_CHECKED_OUT` when the same key raced with a different coupon. That path now consistently returns `IDEMPOTENCY_KEY_REUSED`, with a concurrent regression test. Review also reproduced simultaneous startup failures in PostgreSQL catalog DDL and redirected migration startup to acquire its advisory lock before bootstrap.
 
 No private prompts or transcripts are included.
 
 ## If given another two hours
 
-First, I would add migration advisory locking and checksums, then capture query latency and lock-wait metrics under a short load test. I would also property-test money calculations near integer boundaries and fuzz request decoding. Those checks are more likely to reveal meaningful weaknesses than adding optional frontend surface area.
+First, I would add migration checksum validation and inspect PostgreSQL query plans plus lock-wait metrics under a longer, externally hosted load profile. I would also property-test money calculations near integer boundaries and fuzz request decoding. Those checks are more likely to reveal meaningful weaknesses than adding optional frontend surface area.

@@ -34,7 +34,7 @@ flowchart LR
     PG --> Snapshot[Order item snapshots]
 ```
 
-The service is deliberately a modular monolith. HTTP concerns live in `internal/api`, persistence and business transactions in `internal/store`, and schema ownership in embedded migrations. This keeps the critical checkout path visible in one place while leaving clear seams for extraction if scale requires it.
+The service is deliberately a modular monolith. HTTP concerns live in `internal/api`, persistence and business transactions in `internal/store`, and schema ownership in embedded migrations. Migration startup is serialized in PostgreSQL before any bootstrap DDL, so multiple replicas may safely start against a fresh database. This keeps the critical checkout path visible in one place while leaving clear seams for extraction if scale requires it.
 
 ## API
 
@@ -84,8 +84,10 @@ make reviewer-check    # fmt, vet, unit, and integration
 The integration suite deliberately overlaps operations. It verifies:
 
 - eight simultaneous retries return one order and deduct stock once;
+- concurrent reuse of one idempotency key with a different coupon is consistently rejected;
 - two carts competing for two remaining units produce one order, never an oversell;
 - five simultaneous administrator requests generate one coupon for a milestone;
+- eight simultaneous migration runners safely initialize one fresh schema;
 - a failed checkout does not consume its coupon;
 - two simultaneous checkouts cannot both redeem one coupon;
 - an idempotency key cannot be reused with a different cart or coupon; and
@@ -93,10 +95,32 @@ The integration suite deliberately overlaps operations. It verifies:
 
 Fast handler tests separately verify strict JSON parsing, required idempotency keys, replay headers, resource locations, and the documented status/error-code mapping.
 
+## Load test
+
+The repository includes a no-additional-dependency load harness for the critical read, checkout, retry, inventory-contention, and coupon-contention paths. It resets its target database and therefore refuses to run unless the database name contains `test` or `load`.
+
+Start the isolated database and API:
+
+```bash
+docker compose --profile test up -d --wait test-db
+DATABASE_URL='postgres://checkout:checkout@localhost:5433/checkout_test?sslmode=disable' \
+  HTTP_ADDR='127.0.0.1:18080' go run ./cmd/api
+```
+
+Then run from another terminal:
+
+```bash
+LOADTEST_DATABASE_URL='postgres://checkout:checkout@localhost:5433/checkout_test?sslmode=disable' \
+  make loadtest
+```
+
+Worker counts and durations can be changed through `LOADTEST_ARGS`, for example `LOADTEST_ARGS='-read-workers 32 -checkout-duration 30s'`. The measured local baseline and its limitations are recorded in [LOADTEST.md](LOADTEST.md).
+
 ## Repository map
 
 ```text
 cmd/api/                  process startup and graceful shutdown
+cmd/loadtest/             HTTP load and concurrency-invariant harness
 internal/api/             routes, JSON validation, status/error contract
 internal/config/          environment configuration
 internal/database/        pool, embedded migration, seed data
@@ -106,10 +130,11 @@ docs/openapi.yaml         complete HTTP contract
 scripts/demo.sh           executable reviewer walkthrough
 DECISIONS.md              invariants, trade-offs, and deferred work
 WORKLOG.md                actual implementation-time record
+LOADTEST.md               measured local performance baseline
 ```
 
 Start with [DECISIONS.md](DECISIONS.md) for the reasoning behind the transaction, idempotency, money, coupon, and scaling choices.
 
 ## Time spent
 
-The measured implementation session and the method used to record it are in [WORKLOG.md](WORKLOG.md). The current total is approximately 21 minutes; candidate review or later changes should be appended before submission.
+Measured implementation, review, and correction sessions are recorded in [WORKLOG.md](WORKLOG.md).
