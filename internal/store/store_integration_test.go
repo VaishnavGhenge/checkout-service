@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -394,6 +395,13 @@ func TestOrderKeepsPriceAndNameSnapshot(t *testing.T) {
 	if stored.Items[0].ProductName != "Mechanical Keyboard" || stored.Items[0].UnitPriceCents != 8999 || stored.TotalCents != 17998 {
 		t.Fatalf("order snapshot changed with product: %+v", stored)
 	}
+	cart, err := service.Cart(ctx, cartID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cart.OrderID == nil || *cart.OrderID != order.ID {
+		t.Fatalf("checked-out cart order_id=%v, want %s", cart.OrderID, order.ID)
+	}
 }
 
 func TestCheckoutBlockedOnHotRowTimesOutWithoutEffects(t *testing.T) {
@@ -432,5 +440,50 @@ func TestCheckoutBlockedOnHotRowTimesOutWithoutEffects(t *testing.T) {
 	order, replayed, err := service.Checkout(ctx, cartID, "hot-row", "")
 	if err != nil || replayed || len(order.Items) != 1 {
 		t.Fatalf("retry after timeout: order=%+v replayed=%v err=%v", order, replayed, err)
+	}
+}
+
+func TestReportListsCouponStatusAndCodesAreCaseInsensitive(t *testing.T) {
+	service, _ := integrationStore(t, 1)
+	ctx := context.Background()
+	if _, _, err := service.Checkout(ctx, cartWithItem(t, service, 1, 1), "first", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.Checkout(ctx, cartWithItem(t, service, 2, 1), "second", ""); err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.GenerateCoupon(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.GenerateCoupon(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	order, _, err := service.Checkout(ctx, cartWithItem(t, service, 3, 1), "redeem", " "+strings.ToLower(first.Code)+" ")
+	if err != nil {
+		t.Fatalf("redeem lower-case code: %v", err)
+	}
+	if order.CouponCode == nil || *order.CouponCode != first.Code {
+		t.Fatalf("order coupon=%v, want %s", order.CouponCode, first.Code)
+	}
+	if _, replayed, err := service.Checkout(ctx, order.CartID, "redeem", first.Code); err != nil || !replayed {
+		t.Fatalf("replay with canonical code: replayed=%v err=%v", replayed, err)
+	}
+
+	report, err := service.Report(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := report.Coupons.Items
+	if len(items) != 2 || items[0].Code != first.Code || items[1].Code != second.Code {
+		t.Fatalf("report coupons=%+v", items)
+	}
+	if items[0].Status != "redeemed" || items[0].RedeemedOrderID == nil || *items[0].RedeemedOrderID != order.ID || items[0].RedeemedAt == nil {
+		t.Fatalf("redeemed coupon reported as %+v", items[0])
+	}
+	if items[1].Status != "available" || items[1].RedeemedOrderID != nil {
+		t.Fatalf("available coupon reported as %+v", items[1])
 	}
 }

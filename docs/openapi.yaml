@@ -163,7 +163,9 @@ paths:
               type: object
               additionalProperties: false
               properties:
-                coupon_code: { type: string }
+                coupon_code:
+                  type: string
+                  description: Case-insensitive; surrounding whitespace is ignored.
       responses:
         "201":
           description: Order created or the completed order returned for an exact retry
@@ -309,6 +311,10 @@ components:
           items: { $ref: "#/components/schemas/CartItem" }
         subtotal_cents: { type: integer, format: int64, minimum: 0 }
         currency: { type: string, const: USD }
+        order_id:
+          type: string
+          format: uuid
+          description: Present once the cart is checked out; the order holds the prices actually charged.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     OrderItem:
@@ -361,11 +367,15 @@ components:
         currency: { type: string, const: USD }
         coupons:
           type: object
-          required: [generated, available, redeemed]
+          required: [generated, available, redeemed, items]
           properties:
             generated: { type: integer, format: int64, minimum: 0 }
             available: { type: integer, format: int64, minimum: 0 }
             redeemed: { type: integer, format: int64, minimum: 0 }
+            items:
+              type: array
+              description: Every generated coupon with its status, ordered by milestone.
+              items: { $ref: "#/components/schemas/Coupon" }
         total_orders: { type: integer, format: int64, minimum: 0 }
     APIError:
       type: object

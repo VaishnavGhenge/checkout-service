@@ -49,7 +49,9 @@ sequenceDiagram
 - Cart views use current prices; checkout uses the current price under lock; the resulting order snapshots it forever.
 - `POST` adds a product once and returns `ITEM_ALREADY_EXISTS` if repeated. `PUT` replaces its quantity. Quantity zero is invalid; `DELETE` removes an item.
 - Coupon generation is manual. Each request creates at most one coupon for the oldest reached but unrewarded milestone.
-- Coupons have no expiry, are not customer-bound, and apply to the whole subtotal.
+- Coupons have no expiry, are not customer-bound, and apply to the whole subtotal. Codes carry 48 random bits and are matched case-insensitively after trimming whitespace.
+- The report lists every coupon with its status alongside the counts, so an administrator can recover a code after losing the generation response. The list is unbounded; a larger deployment would paginate it through a separate coupons endpoint.
+- A checked-out cart still shows current catalog prices, and includes `order_id` pointing at the order that holds the prices actually charged.
 - `n` and `x` are deployment configuration. Existing coupons retain the percentage with which they were generated.
 - A retry with the same key, cart, and coupon returns the original order. Reusing that key with different input is a conflict.
 - Empty-cart checkout is a semantic validation error (`422`); conflicting state such as exhausted stock or redeemed coupon is `409`.

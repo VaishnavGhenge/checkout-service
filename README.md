@@ -91,8 +91,9 @@ The integration suite deliberately overlaps operations. It verifies:
 - a failed checkout does not consume its coupon;
 - two simultaneous checkouts cannot both redeem one coupon;
 - an idempotency key cannot be reused with a different cart or coupon;
-- an order retains its original product name and price after the catalog changes; and
-- a checkout blocked on a locked product row times out in bounded time, changes nothing, and succeeds on retry with the same key.
+- an order retains its original product name and price after the catalog changes, and its cart links to it;
+- a checkout blocked on a locked product row times out in bounded time, changes nothing, and succeeds on retry with the same key; and
+- the report lists every coupon with its redemption status, and coupon codes are accepted in any case.
 
 Fast handler tests separately verify strict JSON parsing, required idempotency keys, replay headers, resource locations, and the documented status/error-code mapping.
 

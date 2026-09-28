@@ -85,8 +85,12 @@ func (s *Store) Cart(ctx context.Context, id uuid.UUID) (domain.Cart, error) {
 
 func readCart(ctx context.Context, q querier, id uuid.UUID) (domain.Cart, error) {
 	var cart domain.Cart
-	err := q.QueryRow(ctx, `SELECT id, status, created_at, updated_at FROM carts WHERE id = $1`, id).
-		Scan(&cart.ID, &cart.Status, &cart.CreatedAt, &cart.UpdatedAt)
+	err := q.QueryRow(ctx, `
+		SELECT c.id, c.status, c.created_at, c.updated_at, o.id
+		FROM carts c
+		LEFT JOIN orders o ON o.cart_id = c.id
+		WHERE c.id = $1`, id).
+		Scan(&cart.ID, &cart.Status, &cart.CreatedAt, &cart.UpdatedAt, &cart.OrderID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Cart{}, notFound("cart")
 	}
@@ -226,51 +230,43 @@ func lockOpenCart(ctx context.Context, tx pgx.Tx, cartID uuid.UUID) error {
 
 func (s *Store) Checkout(ctx context.Context, cartID uuid.UUID, idempotencyKey, couponCode string) (domain.Order, bool, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
-	couponCode = strings.TrimSpace(couponCode)
-	if existing, found, err := s.orderByIdempotencyKey(ctx, idempotencyKey); err != nil {
-		return domain.Order{}, false, err
-	} else if found {
-		if existing.CartID != cartID {
-			return domain.Order{}, false, newError("IDEMPOTENCY_KEY_REUSED", "idempotency key was already used for a different cart")
-		}
-		if !sameCoupon(existing.CouponCode, couponCode) {
-			return domain.Order{}, false, newError("IDEMPOTENCY_KEY_REUSED", "idempotency key was already used with a different coupon")
-		}
-		return existing, true, nil
+	couponCode = normalizeCouponCode(couponCode)
+	if order, found, err := s.replay(ctx, cartID, idempotencyKey, couponCode); err != nil || found {
+		return order, found, err
 	}
 
 	order, err := s.checkoutTransaction(ctx, cartID, idempotencyKey, couponCode)
 	if err == nil {
 		return order, false, nil
 	}
+	// Both races below mean another request committed first. If it used this
+	// key, the answer is its order (or a key-reuse conflict), not our error.
 	var domainErr *Error
-	if errors.As(err, &domainErr) && domainErr.Code == "CART_ALREADY_CHECKED_OUT" {
-		existing, found, lookupErr := s.orderByIdempotencyKey(ctx, idempotencyKey)
-		if lookupErr != nil {
-			return domain.Order{}, false, lookupErr
-		}
-		if found {
-			if existing.CartID != cartID {
-				return domain.Order{}, false, newError("IDEMPOTENCY_KEY_REUSED", "idempotency key was already used for a different cart")
-			}
-			if !sameCoupon(existing.CouponCode, couponCode) {
-				return domain.Order{}, false, newError("IDEMPOTENCY_KEY_REUSED", "idempotency key was already used with a different coupon")
-			}
-			return existing, true, nil
-		}
-	}
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "orders_idempotency_key_key" {
-		existing, found, lookupErr := s.orderByIdempotencyKey(ctx, idempotencyKey)
-		if lookupErr != nil {
-			return domain.Order{}, false, lookupErr
+	lostCartRace := errors.As(err, &domainErr) && domainErr.Code == "CART_ALREADY_CHECKED_OUT"
+	lostKeyRace := errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "orders_idempotency_key_key"
+	if lostCartRace || lostKeyRace {
+		if order, found, lookupErr := s.replay(ctx, cartID, idempotencyKey, couponCode); lookupErr != nil || found {
+			return order, found, lookupErr
 		}
-		if found && existing.CartID == cartID && sameCoupon(existing.CouponCode, couponCode) {
-			return existing, true, nil
-		}
-		return domain.Order{}, false, newError("IDEMPOTENCY_KEY_REUSED", "idempotency key was already used for a different cart")
 	}
 	return domain.Order{}, false, err
+}
+
+// replay returns the committed order for key when the request matches it, and
+// IDEMPOTENCY_KEY_REUSED when the key belongs to a different cart or coupon.
+func (s *Store) replay(ctx context.Context, cartID uuid.UUID, idempotencyKey, couponCode string) (domain.Order, bool, error) {
+	existing, found, err := s.orderByIdempotencyKey(ctx, idempotencyKey)
+	if err != nil || !found {
+		return domain.Order{}, false, err
+	}
+	if existing.CartID != cartID {
+		return domain.Order{}, false, newError("IDEMPOTENCY_KEY_REUSED", "idempotency key was already used for a different cart")
+	}
+	if !sameCoupon(existing.CouponCode, couponCode) {
+		return domain.Order{}, false, newError("IDEMPOTENCY_KEY_REUSED", "idempotency key was already used with a different coupon")
+	}
+	return existing, true, nil
 }
 
 func sameCoupon(existing *string, requested string) bool {
@@ -278,6 +274,12 @@ func sameCoupon(existing *string, requested string) bool {
 		return requested == ""
 	}
 	return *existing == requested
+}
+
+// Generated codes are upper case; accepting any case avoids rejecting a code
+// a customer retyped.
+func normalizeCouponCode(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
 }
 
 func (s *Store) checkoutTransaction(ctx context.Context, cartID uuid.UUID, idempotencyKey, couponCode string) (domain.Order, error) {
@@ -492,7 +494,9 @@ func (s *Store) GenerateCoupon(ctx context.Context) (domain.Coupon, error) {
 		ID: uuid.New(), MilestoneOrderCount: milestone,
 		DiscountPercent: s.couponDiscountPercent, Status: "available",
 	}
-	coupon.Code = fmt.Sprintf("SAVE%d-%s", coupon.DiscountPercent, strings.ToUpper(strings.ReplaceAll(coupon.ID.String()[:8], "-", "")))
+	// 12 hex characters (48 random bits) keep codes short to type while making
+	// collisions and guessing impractical at this scale.
+	coupon.Code = fmt.Sprintf("SAVE%d-%s", coupon.DiscountPercent, strings.ToUpper(strings.ReplaceAll(coupon.ID.String(), "-", ""))[:12])
 	err = tx.QueryRow(ctx, `
 		INSERT INTO coupons (id, code, milestone_order_count, discount_percent)
 		VALUES ($1, $2, $3, $4)
@@ -544,8 +548,39 @@ func (s *Store) Report(ctx context.Context) (domain.Report, error) {
 		FROM coupons`).Scan(&report.Coupons.Generated, &report.Coupons.Available, &report.Coupons.Redeemed); err != nil {
 		return domain.Report{}, fmt.Errorf("report coupons: %w", err)
 	}
+	report.Coupons.Items, err = listCoupons(ctx, tx)
+	if err != nil {
+		return domain.Report{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return domain.Report{}, fmt.Errorf("commit report: %w", err)
 	}
 	return report, nil
+}
+
+func listCoupons(ctx context.Context, q querier) ([]domain.Coupon, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id, code, milestone_order_count, discount_percent, redeemed_order_id, created_at, redeemed_at
+		FROM coupons ORDER BY milestone_order_count`)
+	if err != nil {
+		return nil, fmt.Errorf("list coupons: %w", err)
+	}
+	defer rows.Close()
+	coupons := make([]domain.Coupon, 0)
+	for rows.Next() {
+		var coupon domain.Coupon
+		if err := rows.Scan(&coupon.ID, &coupon.Code, &coupon.MilestoneOrderCount, &coupon.DiscountPercent,
+			&coupon.RedeemedOrderID, &coupon.CreatedAt, &coupon.RedeemedAt); err != nil {
+			return nil, fmt.Errorf("scan coupon: %w", err)
+		}
+		coupon.Status = "available"
+		if coupon.RedeemedOrderID != nil {
+			coupon.Status = "redeemed"
+		}
+		coupons = append(coupons, coupon)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate coupons: %w", err)
+	}
+	return coupons, nil
 }

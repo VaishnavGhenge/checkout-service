@@ -30,6 +30,7 @@ type Cart struct {
 	Items         []CartItem `json:"items"`
 	SubtotalCents int64      `json:"subtotal_cents"`
 	Currency      string     `json:"currency"`
+	OrderID       *uuid.UUID `json:"order_id,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
@@ -73,9 +74,10 @@ type ProductQuantity struct {
 }
 
 type CouponSummary struct {
-	Generated int64 `json:"generated"`
-	Available int64 `json:"available"`
-	Redeemed  int64 `json:"redeemed"`
+	Generated int64    `json:"generated"`
+	Available int64    `json:"available"`
+	Redeemed  int64    `json:"redeemed"`
+	Items     []Coupon `json:"items"`
 }
 
 type Report struct {
