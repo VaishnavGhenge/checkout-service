@@ -60,7 +60,7 @@ Money is represented as integer US cents. All error responses use:
 
 The two `/admin` operations are intentionally identified as administrative but are unauthenticated, as allowed by the assignment. Full schemas, status codes, and examples are in [docs/openapi.yaml](docs/openapi.yaml).
 
-Important error codes include `NOT_FOUND`, `ITEM_ALREADY_EXISTS`, `EMPTY_CART`, `CART_ALREADY_CHECKED_OUT`, `INSUFFICIENT_INVENTORY`, `IDEMPOTENCY_KEY_REUSED`, `COUPON_NOT_FOUND`, `COUPON_ALREADY_REDEEMED`, and `NO_ELIGIBLE_MILESTONE`. Validation errors are `400`, absence is `404`, an empty cart is `422`, and state conflicts are `409`.
+Important error codes include `NOT_FOUND`, `ITEM_ALREADY_EXISTS`, `EMPTY_CART`, `CART_ALREADY_CHECKED_OUT`, `INSUFFICIENT_INVENTORY`, `IDEMPOTENCY_KEY_REUSED`, `COUPON_NOT_FOUND`, `COUPON_ALREADY_REDEEMED`, `NO_ELIGIBLE_MILESTONE`, `PAYLOAD_TOO_LARGE`, and `RETRYABLE_CONFLICT`. Validation errors are `400`, absence is `404`, a body over 1 MiB is `413`, an empty cart is `422`, and state conflicts are `409`. A request that waits more than 2 seconds for a row lock, or hits a deadlock or serialization failure, is rolled back and returns `503 RETRYABLE_CONFLICT` with `Retry-After`; retrying checkout with the same `Idempotency-Key` is safe.
 
 ## Configuration
 
@@ -90,8 +90,9 @@ The integration suite deliberately overlaps operations. It verifies:
 - eight simultaneous migration runners safely initialize one fresh schema;
 - a failed checkout does not consume its coupon;
 - two simultaneous checkouts cannot both redeem one coupon;
-- an idempotency key cannot be reused with a different cart or coupon; and
-- an order retains its original product name and price after the catalog changes.
+- an idempotency key cannot be reused with a different cart or coupon;
+- an order retains its original product name and price after the catalog changes; and
+- a checkout blocked on a locked product row times out in bounded time, changes nothing, and succeeds on retry with the same key.
 
 Fast handler tests separately verify strict JSON parsing, required idempotency keys, replay headers, resource locations, and the documented status/error-code mapping.
 

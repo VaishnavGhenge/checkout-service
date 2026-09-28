@@ -73,7 +73,7 @@ func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createCart(w http.ResponseWriter, r *http.Request) {
 	var body struct{}
 	if err := decodeJSON(r, &body, false); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	cart, err := s.store.CreateCart(r.Context())
@@ -110,7 +110,7 @@ func (s *Server) addCartItem(w http.ResponseWriter, r *http.Request) {
 	}
 	var request itemRequest
 	if err := decodeJSON(r, &request, true); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	if request.ProductID <= 0 || !validQuantity(request.Quantity) {
@@ -138,7 +138,7 @@ func (s *Server) updateCartItem(w http.ResponseWriter, r *http.Request) {
 		Quantity int `json:"quantity"`
 	}
 	if err := decodeJSON(r, &request, true); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	if !validQuantity(request.Quantity) {
@@ -183,7 +183,7 @@ func (s *Server) checkout(w http.ResponseWriter, r *http.Request) {
 		CouponCode string `json:"coupon_code"`
 	}
 	if err := decodeJSON(r, &request, false); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	order, replayed, err := s.store.Checkout(r.Context(), cartID, idempotencyKey, request.CouponCode)
@@ -214,7 +214,7 @@ func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 func (s *Server) generateCoupon(w http.ResponseWriter, r *http.Request) {
 	var body struct{}
 	if err := decodeJSON(r, &body, false); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	coupon, err := s.store.GenerateCoupon(r.Context())
@@ -270,6 +270,15 @@ func decodeJSON(r *http.Request, destination any, required bool) error {
 	return nil
 }
 
+func writeDecodeError(w http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeAPIError(w, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", fmt.Sprintf("request body must be at most %d bytes", tooLarge.Limit))
+		return
+	}
+	writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+}
+
 type errorEnvelope struct {
 	Error struct {
 		Code    string `json:"code"`
@@ -295,6 +304,14 @@ func (s *Server) respondError(w http.ResponseWriter, r *http.Request, err error)
 			status = http.StatusUnprocessableEntity
 		}
 		writeAPIError(w, status, domainErr.Code, domainErr.Message)
+		return
+	}
+	if store.IsRetryable(err) {
+		// The transaction rolled back, so nothing changed. Checkout retries are
+		// safe with the same Idempotency-Key.
+		s.logger.Warn("request hit database contention", "method", r.Method, "path", r.URL.Path, "error", err)
+		w.Header().Set("Retry-After", "1")
+		writeAPIError(w, http.StatusServiceUnavailable, "RETRYABLE_CONFLICT", "the request conflicted with concurrent activity and was not applied; retry it")
 		return
 	}
 	s.logger.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)

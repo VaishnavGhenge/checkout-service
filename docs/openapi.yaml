@@ -102,6 +102,8 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "503": { $ref: "#/components/responses/RetryableConflict" }
   /carts/{cartID}/items/{productID}:
     parameters:
       - $ref: "#/components/parameters/CartID"
@@ -131,6 +133,8 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "503": { $ref: "#/components/responses/RetryableConflict" }
     delete:
       tags: [Carts]
       summary: Remove a cart item
@@ -139,6 +143,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/RetryableConflict" }
   /carts/{cartID}/checkout:
     parameters:
       - $ref: "#/components/parameters/CartID"
@@ -173,11 +178,13 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "422":
           description: The cart is empty
           content:
             application/json:
               schema: { $ref: "#/components/schemas/APIError" }
+        "503": { $ref: "#/components/responses/RetryableConflict" }
   /orders/{orderID}:
     parameters:
       - name: orderID
@@ -216,6 +223,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/APIError" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "503": { $ref: "#/components/responses/RetryableConflict" }
   /admin/report:
     get:
       tags: [Administration]
@@ -246,6 +255,22 @@ components:
           schema: { $ref: "#/components/schemas/APIError" }
     Conflict:
       description: Operation conflicts with current cart, stock, idempotency, or coupon state
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/APIError" }
+    PayloadTooLarge:
+      description: Request body exceeds 1 MiB (`PAYLOAD_TOO_LARGE`)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/APIError" }
+    RetryableConflict:
+      description: |
+        `RETRYABLE_CONFLICT`: the request waited too long for a lock, or hit a
+        deadlock or serialization failure, and was rolled back without effect.
+        Retry after the `Retry-After` delay; checkout retries must reuse the
+        same `Idempotency-Key`.
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds to wait before retrying }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/APIError" }

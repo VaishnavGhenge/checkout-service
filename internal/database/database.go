@@ -14,6 +14,14 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
+// Bounded waits keep a hot product row from holding every pooled connection
+// indefinitely. A request that hits either limit rolls back and is reported as
+// retryable; the idempotency key makes that retry safe.
+const (
+	LockTimeout      = "2s"
+	StatementTimeout = "5s"
+)
+
 func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -22,6 +30,8 @@ func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	config.MaxConns = 20
 	config.MinConns = 2
 	config.MaxConnLifetime = 30 * time.Minute
+	config.ConnConfig.RuntimeParams["lock_timeout"] = LockTimeout
+	config.ConnConfig.RuntimeParams["statement_timeout"] = StatementTimeout
 
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
@@ -47,6 +57,11 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	defer tx.Rollback(ctx)
 
+	// Replicas that start together must wait for the winning migration runner
+	// rather than fail on the request-path timeouts.
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = 0; SET LOCAL statement_timeout = 0`); err != nil {
+		return fmt.Errorf("disable migration timeouts: %w", err)
+	}
 	// The lock must be acquired before even the bootstrap DDL. PostgreSQL's
 	// CREATE TABLE IF NOT EXISTS does not make concurrent table creation safe:
 	// competing application replicas can still race on internal catalog rows.

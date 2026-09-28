@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -392,5 +393,44 @@ func TestOrderKeepsPriceAndNameSnapshot(t *testing.T) {
 	}
 	if stored.Items[0].ProductName != "Mechanical Keyboard" || stored.Items[0].UnitPriceCents != 8999 || stored.TotalCents != 17998 {
 		t.Fatalf("order snapshot changed with product: %+v", stored)
+	}
+}
+
+func TestCheckoutBlockedOnHotRowTimesOutWithoutEffects(t *testing.T) {
+	service, pool := integrationStore(t, 5)
+	ctx := context.Background()
+	cartID := cartWithItem(t, service, 5, 1)
+
+	blocker, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback(ctx)
+	if _, err := blocker.Exec(ctx, `SELECT 1 FROM products WHERE id = 5 FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	_, _, err = service.Checkout(ctx, cartID, "hot-row", "")
+	if !IsRetryable(err) {
+		t.Fatalf("error=%v, want a retryable lock timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed > 4*time.Second {
+		t.Fatalf("checkout waited %s for the lock", elapsed)
+	}
+	if err := blocker.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var inventory int
+	if err := pool.QueryRow(ctx, `SELECT inventory FROM products WHERE id = 5`).Scan(&inventory); err != nil {
+		t.Fatal(err)
+	}
+	if inventory != 2 {
+		t.Fatalf("timed-out checkout changed inventory to %d", inventory)
+	}
+	order, replayed, err := service.Checkout(ctx, cartID, "hot-row", "")
+	if err != nil || replayed || len(order.Items) != 1 {
+		t.Fatalf("retry after timeout: order=%+v replayed=%v err=%v", order, replayed, err)
 	}
 }

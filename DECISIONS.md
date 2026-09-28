@@ -114,13 +114,25 @@ sequenceDiagram
 
 **Consequences:** Generating many accumulated rewards requires repeated calls. A batch limit could be added without changing the invariant.
 
+## Decision: Bounded lock waits with a retryable error
+
+**Context:** Checkout holds product row locks. Without a limit, requests competing for a hot product queue behind each other indefinitely, each holding one of the 20 pooled connections, and `http.Server.WriteTimeout` does not cancel the request context.
+
+**Options considered:** No limit; a per-request context deadline; PostgreSQL `lock_timeout` and `statement_timeout` on every pooled connection.
+
+**Choice:** Every pooled connection sets `lock_timeout = 2s` and `statement_timeout = 5s`. Lock timeouts, statement timeouts, deadlocks and serialization failures return `503 RETRYABLE_CONFLICT` with `Retry-After: 1`. The migration transaction disables both limits locally, because replicas starting together must wait for the winning runner.
+
+**Why:** The database enforces the limit on every statement, including paths added later, and the failed transaction rolls back completely. Because checkout is idempotent, the client's correct response is to retry with the same key, and the error code says so rather than looking like a server bug.
+
+**Consequences:** Under extreme contention some checkouts fail fast instead of eventually succeeding. In the local load harness, 200 simultaneous checkouts against one product row with 100 units produced no timeouts: p99 was 106 ms, well under the 2 second limit. The 2 second value is a starting point to tune from lock-wait metrics, not a measured optimum.
+
 ## Decision: Stable machine-readable errors
 
 **Context:** API clients need to distinguish missing resources, invalid input, and state conflicts without parsing prose.
 
 **Options considered:** Plain strings; HTTP status alone; an error envelope with stable codes.
 
-**Choice:** Return `{error: {code, message}}`, map validation to `400`/`422`, absence to `404`, conflicts to `409`, and unexpected failures to a non-revealing `500`.
+**Choice:** Return `{error: {code, message}}`, map validation to `400`/`422`, oversized bodies to `413`, absence to `404`, conflicts to `409`, contention that rolled back to a retryable `503`, and unexpected failures to a non-revealing `500`.
 
 **Why:** Codes form a small client contract while messages remain useful to humans. Internal database details are logged rather than exposed.
 
@@ -145,15 +157,15 @@ Implemented: all required cart operations, product listing, atomic and idempoten
 Deferred deliberately:
 
 - authentication and authorization, as permitted by the brief;
-- real payment processing—the transaction treats successful checkout as payment success;
+- real payment processing: the transaction treats successful checkout as payment success;
 - product administration, reservation expiry, tax, shipping, multiple currencies, and coupon expiry/customer ownership;
 - migration tooling with down migrations and checksum validation;
-- metrics, distributed tracing, rate limits, and deployment manifests;
+- metrics, distributed tracing, rate limits (including on coupon guessing), and deployment manifests;
 - durable payment/outbox orchestration, which is unnecessary without external side effects.
 
 ## Multiple instances and production evolution
 
-The correctness mechanisms already reside in PostgreSQL, so multiple stateless API instances can share the database without a process-local lock. Checkout and coupon generation use database row/advisory locks, and simultaneous startup migration runners are serialized by a separate database advisory lock. All instances must use identical coupon configuration. Production hardening would add a connection proxy where appropriate, move migration execution to a deployment job for operational control, add TLS and secret-managed database credentials, authenticate admin routes, add request correlation and observability, retry bounded serialization/deadlock failures, maintain backups, and load-test hot inventory rows.
+The correctness mechanisms already reside in PostgreSQL, so multiple stateless API instances can share the database without a process-local lock. Checkout and coupon generation use database row/advisory locks, and simultaneous startup migration runners are serialized by a separate database advisory lock. All instances must use identical coupon configuration. Production hardening would add a connection proxy where appropriate, move migration execution to a deployment job for operational control, add TLS and secret-managed database credentials, authenticate admin routes, add request correlation and observability, tune the lock timeout from lock-wait metrics, maintain backups, and load-test hot inventory rows.
 
 If payment or notifications become external side effects, checkout should become a state machine. A durable idempotency record would claim the request, payment would use the same external idempotency key, and an outbox written with the order would drive notifications. Database locks should never be held across a network payment call.
 

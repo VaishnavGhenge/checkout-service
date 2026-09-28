@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/vaishnavghenge/checkout-service/internal/domain"
 	"github.com/vaishnavghenge/checkout-service/internal/store"
 )
@@ -131,6 +133,34 @@ func TestDomainErrorsHaveStableHTTPMapping(t *testing.T) {
 			assertAPIError(t, response, test.wantStatus, test.code)
 		})
 	}
+}
+
+func TestDatabaseContentionIsRetryable(t *testing.T) {
+	for _, code := range []string{"55P03", "57014", "40P01", "40001"} {
+		t.Run(code, func(t *testing.T) {
+			service := &fakeService{checkout: func(context.Context, uuid.UUID, string, string) (domain.Order, bool, error) {
+				return domain.Order{}, false, fmt.Errorf("lock checkout products: %w", &pgconn.PgError{Code: code})
+			}}
+			request := httptest.NewRequest(http.MethodPost, "/carts/"+uuid.NewString()+"/checkout", strings.NewReader(`{}`))
+			request.Header.Set("Idempotency-Key", "test-key")
+			response := httptest.NewRecorder()
+			testServer(service).ServeHTTP(response, request)
+			assertAPIError(t, response, http.StatusServiceUnavailable, "RETRYABLE_CONFLICT")
+			if response.Header().Get("Retry-After") == "" {
+				t.Fatal("retryable response has no Retry-After header")
+			}
+		})
+	}
+}
+
+func TestOversizedBodyIsRejected(t *testing.T) {
+	body := `{"product_id":1,"quantity":1,"padding":"` + strings.Repeat("x", 1<<20) + `"}`
+	request := httptest.NewRequest(http.MethodPost, "/carts/"+uuid.NewString()+"/items", strings.NewReader(body))
+	response := httptest.NewRecorder()
+
+	testServer(&fakeService{}).ServeHTTP(response, request)
+
+	assertAPIError(t, response, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE")
 }
 
 func assertAPIError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
