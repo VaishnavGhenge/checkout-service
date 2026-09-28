@@ -154,7 +154,7 @@ sequenceDiagram
 
 ## Implemented and intentionally deferred
 
-Implemented: all required cart operations, product listing, atomic and idempotent checkout, order retrieval, manual coupon generation, coupon redemption, repeatable-read reporting, serialized embedded migrations and seeds, structured errors/logging, graceful shutdown, health checking, Docker Compose, executable examples, OpenAPI documentation, handler contract tests, real PostgreSQL concurrency tests, and a repeatable critical-path HTTP load harness.
+Implemented: all required cart operations, product listing, atomic and idempotent checkout, order retrieval, manual coupon generation, coupon redemption, repeatable-read reporting, serialized embedded migrations and seeds, structured errors/logging, graceful shutdown, health checking, Docker Compose, executable examples, OpenAPI documentation with an interactive Scalar reference served at `/docs`, handler contract tests, real PostgreSQL concurrency tests, and a repeatable critical-path HTTP load harness.
 
 Deferred deliberately:
 
@@ -176,6 +176,10 @@ If payment or notifications become external side effects, checkout should become
 AI-assisted coding and review tools were used to accelerate scaffolding, enumerate failure cases, and critique the transaction design. Every produced path was compiled, vetted, and tested against PostgreSQL.
 
 One material correction came from reviewing the initial idempotency flow: two concurrent retries could both miss the first lookup; the loser then waited for the cart lock and could incorrectly receive `CART_ALREADY_CHECKED_OUT`. The flow was redirected to re-read the completed order after that lock race, and an eight-way concurrent regression test now proves one order is returned to every exact retry while inventory changes once. Review then exposed the related mismatched-input race: the post-lock lookup returned `CART_ALREADY_CHECKED_OUT` when the same key raced with a different coupon. That path now consistently returns `IDEMPOTENCY_KEY_REUSED`, with a concurrent regression test. Review also reproduced simultaneous startup failures in PostgreSQL catalog DDL and redirected migration startup to acquire its advisory lock before bootstrap.
+
+A later production-readiness review read the code against the brief rather than against its own tests. It found gaps the suites could not show because nothing asserted them: checkouts on a hot row waited on locks with no limit, contention surfaced as an undifferentiated `500`, the report gave coupon counts but no codes, and one idempotency path said "different cart" when the coupon was the mismatch. The first two are recorded above as the bounded-lock-wait decision. Each fix has a regression test except the message wording, which became correct by routing all three replay checks through one function. The load harness was rerun to confirm the 2 second lock timeout does not fire under its heaviest contention.
+
+AI output was checked against the code or clock before it was kept, and two drafts failed that check. A generated rationale described the contention scenario as 16 workers on one product; the harness actually fires 200 simultaneous checkouts, and the text was corrected from the source. A generated work-log entry recorded 130 minutes for a session that commit timestamps put at about 20; the entry was replaced with the measured figure.
 
 No private prompts or transcripts are included.
 
