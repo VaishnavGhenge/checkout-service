@@ -47,6 +47,8 @@ Money is represented as integer US cents. All error responses use:
 | Method | Path | Success | Purpose |
 |---|---|---:|---|
 | `GET` | `/health` | 200 | Process and database readiness |
+| `GET` | `/docs` | 200 | Interactive API reference (Scalar) |
+| `GET` | `/openapi.yaml` | 200 | OpenAPI 3.1 contract served by the running service |
 | `GET` | `/products` | 200 | List seeded products and current inventory |
 | `POST` | `/carts` | 201 | Create an empty cart |
 | `GET` | `/carts/{cartID}` | 200 | View current prices and calculated subtotal |
@@ -58,7 +60,7 @@ Money is represented as integer US cents. All error responses use:
 | `POST` | `/admin/coupons` | 201 | Generate one coupon for the oldest eligible milestone |
 | `GET` | `/admin/report` | 200 | Return a consistent, non-mutating business report |
 
-The two `/admin` operations are intentionally identified as administrative but are unauthenticated, as allowed by the assignment. Full schemas, status codes, and examples are in [docs/openapi.yaml](docs/openapi.yaml).
+The two `/admin` operations are intentionally identified as administrative but are unauthenticated, as allowed by the assignment. Full schemas, status codes, and examples are in [docs/openapi.yaml](docs/openapi.yaml). With the service running, open <http://localhost:8080/docs> to browse the contract and send requests from the page. The page loads a pinned Scalar build from jsDelivr, so it needs internet access; the API does not.
 
 Important error codes include `NOT_FOUND`, `ITEM_ALREADY_EXISTS`, `EMPTY_CART`, `CART_ALREADY_CHECKED_OUT`, `INSUFFICIENT_INVENTORY`, `IDEMPOTENCY_KEY_REUSED`, `COUPON_NOT_FOUND`, `COUPON_ALREADY_REDEEMED`, `NO_ELIGIBLE_MILESTONE`, `PAYLOAD_TOO_LARGE`, and `RETRYABLE_CONFLICT`. Validation errors are `400`, absence is `404`, a body over 1 MiB is `413`, an empty cart is `422`, and state conflicts are `409`. A request that waits more than 2 seconds for a row lock, or hits a deadlock or serialization failure, is rolled back and returns `503 RETRYABLE_CONFLICT` with `Retry-After`; retrying checkout with the same `Idempotency-Key` is safe.
 

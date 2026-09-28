@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vaishnavghenge/checkout-service/docs"
 	"github.com/vaishnavghenge/checkout-service/internal/domain"
 	"github.com/vaishnavghenge/checkout-service/internal/store"
 )
@@ -40,6 +41,8 @@ func NewServer(dataStore Service, logger *slog.Logger) http.Handler {
 	s := &Server{store: dataStore, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("GET /openapi.yaml", openAPISpec)
+	mux.HandleFunc("GET /docs", apiReference)
 	mux.HandleFunc("GET /products", s.listProducts)
 	mux.HandleFunc("POST /carts", s.createCart)
 	mux.HandleFunc("GET /carts/{cartID}", s.getCart)
@@ -59,6 +62,41 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func openAPISpec(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml")
+	_, _ = w.Write(docs.OpenAPI)
+}
+
+// The reference page loads a pinned Scalar build from jsDelivr, so viewing it
+// needs internet access; the API itself does not.
+const apiReferencePage = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout API reference</title>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.72.1/dist/browser/standalone.js"></script>
+<script>
+Scalar.createApiReference('#app', {
+  url: '/openapi.yaml',
+  darkMode: true,
+  agent: { disabled: true },
+  mcp: { disabled: true },
+  showDeveloperTools: 'never',
+})
+</script>
+</body>
+</html>
+`
+
+func apiReference(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, apiReferencePage)
 }
 
 func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {

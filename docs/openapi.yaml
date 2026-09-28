@@ -9,6 +9,7 @@ info:
 servers:
   - url: http://localhost:8080
 tags:
+  - name: Service
   - name: Products
   - name: Carts
   - name: Orders
@@ -16,6 +17,7 @@ tags:
 paths:
   /health:
     get:
+      tags: [Service]
       summary: Check process and database readiness
       responses:
         "200":
@@ -27,6 +29,26 @@ paths:
                 properties:
                   status: { type: string, const: ok }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /openapi.yaml:
+    get:
+      tags: [Service]
+      summary: Return this OpenAPI contract
+      responses:
+        "200":
+          description: The contract as YAML
+          content:
+            application/yaml:
+              schema: { type: string }
+  /docs:
+    get:
+      tags: [Service]
+      summary: Interactive API reference rendered with Scalar
+      responses:
+        "200":
+          description: HTML page that loads /openapi.yaml
+          content:
+            text/html:
+              schema: { type: string }
   /products:
     get:
       tags: [Products]

@@ -163,6 +163,22 @@ func TestOversizedBodyIsRejected(t *testing.T) {
 	assertAPIError(t, response, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE")
 }
 
+func TestServesOpenAPIContractAndReference(t *testing.T) {
+	handler := testServer(&fakeService{})
+
+	spec := httptest.NewRecorder()
+	handler.ServeHTTP(spec, httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil))
+	if spec.Code != http.StatusOK || !strings.HasPrefix(spec.Body.String(), "openapi: 3.1.0") {
+		t.Fatalf("spec status=%d body starts %.40q", spec.Code, spec.Body.String())
+	}
+
+	page := httptest.NewRecorder()
+	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/docs", nil))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "url: '/openapi.yaml'") {
+		t.Fatalf("docs status=%d body=%s", page.Code, page.Body.String())
+	}
+}
+
 func assertAPIError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 	if response.Code != status {
