@@ -139,12 +139,16 @@ func (s *Store) mutateCartItem(ctx context.Context, cartID uuid.UUID, productID 
 	if err := lockOpenCart(ctx, tx, cartID); err != nil {
 		return domain.Cart{}, err
 	}
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM products WHERE id = $1)`, productID).Scan(&exists); err != nil {
+	var inventory int
+	err = tx.QueryRow(ctx, `SELECT inventory FROM products WHERE id = $1`, productID).Scan(&inventory)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Cart{}, notFound("product")
+	}
+	if err != nil {
 		return domain.Cart{}, fmt.Errorf("check product: %w", err)
 	}
-	if !exists {
-		return domain.Cart{}, notFound("product")
+	if quantity > inventory {
+		return domain.Cart{}, newError("INSUFFICIENT_INVENTORY", fmt.Sprintf("product %d has %d units available but %d were requested", productID, inventory, quantity))
 	}
 
 	if operation == "add" {

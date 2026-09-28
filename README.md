@@ -87,7 +87,8 @@ The integration suite deliberately overlaps operations. It verifies:
 - two carts competing for two remaining units produce one order, never an oversell;
 - five simultaneous administrator requests generate one coupon for a milestone;
 - a failed checkout does not consume its coupon;
-- a redeemed coupon cannot be used again; and
+- two simultaneous checkouts cannot both redeem one coupon;
+- an idempotency key cannot be reused with a different cart or coupon; and
 - an order retains its original product name and price after the catalog changes.
 
 ## Repository map
@@ -106,4 +107,3 @@ WORKLOG.md                actual implementation-time record
 ```
 
 Start with [DECISIONS.md](DECISIONS.md) for the reasoning behind the transaction, idempotency, money, coupon, and scaling choices.
-

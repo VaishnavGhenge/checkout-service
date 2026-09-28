@@ -44,7 +44,7 @@ sequenceDiagram
 
 ## Selected semantics for ambiguities
 
-- Cart items do not reserve inventory. Availability is authoritative at checkout.
+- Cart items do not reserve inventory. Requests above current stock are rejected when a cart changes for early feedback, but availability is revalidated authoritatively at checkout.
 - Cart views use current prices; checkout uses the current price under lock; the resulting order snapshots it forever.
 - `POST` adds a product once and returns `ITEM_ALREADY_EXISTS` if repeated. `PUT` replaces its quantity. Quantity zero is invalid; `DELETE` removes an item.
 - Coupon generation is manual. Each request creates at most one coupon for the oldest reached but unrewarded milestone.
@@ -148,7 +148,7 @@ If payment or notifications become external side effects, checkout should become
 
 AI-assisted coding and review tools were used to accelerate scaffolding, enumerate failure cases, and critique the transaction design. Every produced path was compiled, vetted, and tested against PostgreSQL.
 
-One material correction came from reviewing the initial idempotency flow: two concurrent retries could both miss the first lookup; the loser then waited for the cart lock and could incorrectly receive `CART_ALREADY_CHECKED_OUT`. The flow was redirected to re-read the completed order after that lock race, and an eight-way concurrent regression test now proves one order is returned to every retry while inventory changes once.
+One material correction came from reviewing the initial idempotency flow: two concurrent retries could both miss the first lookup; the loser then waited for the cart lock and could incorrectly receive `CART_ALREADY_CHECKED_OUT`. The flow was redirected to re-read the completed order after that lock race, and an eight-way concurrent regression test now proves one order is returned to every retry while inventory changes once. A separate concurrent test races two carts for one coupon.
 
 No private prompts or transcripts are included.
 

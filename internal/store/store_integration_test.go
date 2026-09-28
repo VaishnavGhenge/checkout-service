@@ -117,6 +117,17 @@ func TestConcurrentIdempotentCheckoutCreatesOneOrder(t *testing.T) {
 	if orders != 1 || inventory != 19 {
 		t.Fatalf("orders=%d inventory=%d, want orders=1 inventory=19", orders, inventory)
 	}
+
+	_, _, err := service.Checkout(context.Background(), cartID, "same-request", "different-coupon")
+	var domainErr *Error
+	if !errors.As(err, &domainErr) || domainErr.Code != "IDEMPOTENCY_KEY_REUSED" {
+		t.Fatalf("changed replay error=%v, want IDEMPOTENCY_KEY_REUSED", err)
+	}
+	otherCart := cartWithItem(t, service, 2, 1)
+	_, _, err = service.Checkout(context.Background(), otherCart, "same-request", "")
+	if !errors.As(err, &domainErr) || domainErr.Code != "IDEMPOTENCY_KEY_REUSED" {
+		t.Fatalf("cross-cart replay error=%v, want IDEMPOTENCY_KEY_REUSED", err)
+	}
 }
 
 func TestConcurrentCheckoutDoesNotOversell(t *testing.T) {
@@ -214,7 +225,13 @@ func TestCouponGenerationAndRedemptionAreAtomic(t *testing.T) {
 		t.Fatalf("generated=%d rejected=%d, want 1 and %d", generated, rejected, generators-1)
 	}
 
-	failingCart := cartWithItem(t, service, 5, 3)
+	// The cart was valid when created, but another checkout consumes the stock
+	// before it checks out. This exercises rollback with a genuine availability change.
+	failingCart := cartWithItem(t, service, 5, 2)
+	depletingCart := cartWithItem(t, service, 5, 2)
+	if _, _, err := service.Checkout(ctx, depletingCart, "deplete-limited-stock", ""); err != nil {
+		t.Fatalf("deplete limited stock: %v", err)
+	}
 	if _, _, err := service.Checkout(ctx, failingCart, "failed-with-coupon", couponCode); err == nil {
 		t.Fatal("expected insufficient-inventory checkout to fail")
 	}
@@ -226,31 +243,87 @@ func TestCouponGenerationAndRedemptionAreAtomic(t *testing.T) {
 		t.Fatalf("failed checkout consumed coupon: %+v", report.Coupons)
 	}
 
-	successfulCart := cartWithItem(t, service, 2, 1)
-	order, _, err := service.Checkout(ctx, successfulCart, "coupon-success", couponCode)
-	if err != nil {
-		t.Fatalf("redeem coupon: %v", err)
+	competingCarts := []uuid.UUID{
+		cartWithItem(t, service, 2, 1),
+		cartWithItem(t, service, 3, 1),
 	}
-	if order.DiscountCents != 350 || order.TotalCents != 3149 {
-		t.Fatalf("unexpected discounted totals: discount=%d total=%d", order.DiscountCents, order.TotalCents)
+	redemptionStart := make(chan struct{})
+	redemptions := make(chan struct {
+		subtotal int64
+		discount int64
+		err      error
+	}, len(competingCarts))
+	for index, cartID := range competingCarts {
+		waitGroup.Add(1)
+		go func(index int, cartID uuid.UUID) {
+			defer waitGroup.Done()
+			<-redemptionStart
+			order, _, err := service.Checkout(ctx, cartID, "coupon-race-"+string(rune('a'+index)), couponCode)
+			redemptions <- struct {
+				subtotal int64
+				discount int64
+				err      error
+			}{order.SubtotalCents, order.DiscountCents, err}
+		}(index, cartID)
 	}
+	close(redemptionStart)
+	waitGroup.Wait()
+	close(redemptions)
 
-	competingCart := cartWithItem(t, service, 3, 1)
-	_, _, err = service.Checkout(ctx, competingCart, "coupon-reuse", couponCode)
-	var domainErr *Error
-	if !errors.As(err, &domainErr) || domainErr.Code != "COUPON_ALREADY_REDEEMED" {
-		t.Fatalf("coupon reuse error=%v, want COUPON_ALREADY_REDEEMED", err)
+	var redeemedSubtotal, redeemedDiscount int64
+	redemptionSuccesses, redemptionConflicts := 0, 0
+	for redemption := range redemptions {
+		if redemption.err == nil {
+			redemptionSuccesses++
+			redeemedSubtotal = redemption.subtotal
+			redeemedDiscount = redemption.discount
+			continue
+		}
+		var domainErr *Error
+		if errors.As(redemption.err, &domainErr) && domainErr.Code == "COUPON_ALREADY_REDEEMED" {
+			redemptionConflicts++
+			continue
+		}
+		t.Fatalf("unexpected coupon race error: %v", redemption.err)
+	}
+	if redemptionSuccesses != 1 || redemptionConflicts != 1 {
+		t.Fatalf("coupon race successes=%d conflicts=%d, want 1 and 1", redemptionSuccesses, redemptionConflicts)
+	}
+	if redeemedDiscount != percentageDiscount(redeemedSubtotal, 10) {
+		t.Fatalf("discount=%d does not match 10%% of subtotal=%d", redeemedDiscount, redeemedSubtotal)
 	}
 
 	report, err = service.Report(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.TotalOrders != 2 || report.Coupons.Generated != 1 || report.Coupons.Redeemed != 1 || report.Coupons.Available != 0 {
+	if report.TotalOrders != 3 || report.Coupons.Generated != 1 || report.Coupons.Redeemed != 1 || report.Coupons.Available != 0 {
 		t.Fatalf("unexpected final report: %+v", report)
 	}
-	if report.GrossRevenueCents != 12498 || report.TotalDiscountsCents != 350 || report.NetRevenueCents != 12148 {
+	wantGross := int64(8999 + 2598 + redeemedSubtotal)
+	if report.GrossRevenueCents != wantGross || report.TotalDiscountsCents != redeemedDiscount || report.NetRevenueCents != wantGross-redeemedDiscount {
 		t.Fatalf("report does not reconcile: %+v", report)
+	}
+}
+
+func TestCartRejectsQuantityAboveCurrentInventory(t *testing.T) {
+	service, _ := integrationStore(t, 5)
+	ctx := context.Background()
+	cart, err := service.CreateCart(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.AddCartItem(ctx, cart.ID, 5, 3)
+	var domainErr *Error
+	if !errors.As(err, &domainErr) || domainErr.Code != "INSUFFICIENT_INVENTORY" {
+		t.Fatalf("error=%v, want INSUFFICIENT_INVENTORY", err)
+	}
+	stored, err := service.Cart(ctx, cart.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Items) != 0 {
+		t.Fatalf("invalid quantity entered cart: %+v", stored.Items)
 	}
 }
 
