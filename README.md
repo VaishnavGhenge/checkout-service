@@ -109,3 +109,7 @@ WORKLOG.md                actual implementation-time record
 ```
 
 Start with [DECISIONS.md](DECISIONS.md) for the reasoning behind the transaction, idempotency, money, coupon, and scaling choices.
+
+## Time spent
+
+The measured implementation session and the method used to record it are in [WORKLOG.md](WORKLOG.md). The current total is approximately 21 minutes; candidate review or later changes should be appended before submission.

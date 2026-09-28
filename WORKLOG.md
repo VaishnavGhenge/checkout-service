@@ -1,9 +1,9 @@
 # Work log
 
-The assignment asks for approximate time spent. This file records active implementation time rather than elapsed calendar time.
+The assignment asks for approximate time spent. This file records measured elapsed work sessions; future review or modification sessions should be appended before submission.
 
-| Date | Activity | Time |
-|---|---|---:|
-| 2026-09-28 | Requirements review, architecture, implementation, database constraints, concurrency tests, reviewer documentation, and verification | In progress |
+| Date | Session | Activity | Elapsed time |
+|---|---|---|---:|
+| 2026-09-28 | 17:01–17:22 IST | Requirements review, architecture, implementation, database constraints, concurrency and HTTP contract tests, reviewer documentation, Docker demo, stress passes, and final verification | 21 minutes |
 
-The final total will be recorded when the submission pass is complete.
+**Recorded total so far: approximately 21 minutes.** This unusually short elapsed time reflects extensive AI-assisted implementation and automated verification. Candidate review and any subsequent changes are not yet included and must be added to the declared total before submission.
