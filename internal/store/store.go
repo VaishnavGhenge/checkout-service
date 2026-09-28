@@ -27,6 +27,10 @@ func New(pool *pgxpool.Pool, couponEveryNOrders, couponDiscountPercent int) *Sto
 	}
 }
 
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 func (s *Store) Products(ctx context.Context) ([]domain.Product, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, name, price_cents, inventory FROM products ORDER BY id`)
 	if err != nil {

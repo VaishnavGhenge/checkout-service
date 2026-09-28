@@ -37,7 +37,11 @@ func NewServer(dataStore *store.Store, logger *slog.Logger) http.Handler {
 	return s.recoverPanic(s.logRequests(mux))
 }
 
-func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.Ping(r.Context()); err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database is unavailable")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -51,12 +55,10 @@ func (s *Server) listProducts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createCart(w http.ResponseWriter, r *http.Request) {
-	if r.ContentLength > 0 {
-		var body struct{}
-		if err := decodeJSON(r, &body, false); err != nil {
-			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
-			return
-		}
+	var body struct{}
+	if err := decodeJSON(r, &body, false); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
 	}
 	cart, err := s.store.CreateCart(r.Context())
 	if err != nil {
@@ -194,12 +196,10 @@ func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) generateCoupon(w http.ResponseWriter, r *http.Request) {
-	if r.ContentLength > 0 {
-		var body struct{}
-		if err := decodeJSON(r, &body, false); err != nil {
-			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
-			return
-		}
+	var body struct{}
+	if err := decodeJSON(r, &body, false); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
 	}
 	coupon, err := s.store.GenerateCoupon(r.Context())
 	if err != nil {
